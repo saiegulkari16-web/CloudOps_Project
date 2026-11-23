@@ -1,0 +1,72 @@
+---
+name: CloudOps CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: clouduser
+          POSTGRES_PASSWORD: localdev123
+          POSTGRES_DB: cloudops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clouduser -d cloudops"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: cloudops
+      DB_USER: clouduser
+      DB_PASSWORD: localdev123
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Initialize database schema
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          with psycopg.connect(
+              host=os.environ["DB_HOST"],
+              port=os.environ["DB_PORT"],
+              dbname=os.environ["DB_NAME"],
+              user=os.environ["DB_USER"],
+              password=os.environ["DB_PASSWORD"]
+          ) as conn:
+              with conn.cursor() as cur:
+                  with open("database/init.sql") as sql_file:
+                      cur.execute(sql_file.read())
+          PY
+
+      - name: Run automated tests
+        run: pytest -v
+
+      - name: Build Docker image
+        run: docker build -t cloudops-api:ci .
