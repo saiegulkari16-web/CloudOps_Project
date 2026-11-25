@@ -3,3 +3,6 @@ uvicorn[standard]==0.54.0
 psycopg[binary]
 pytest==9.2.0
 httpx2
+boto3==1.44.9
+python-multipart==0.0.34
+prometheus-fastapi-instrumentator

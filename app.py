@@ -1,11 +1,35 @@
 import os
+import boto3
 import psycopg
 import logging
+from prometheus_fastapi_instrumentator import Instrumentator
+from botocore.exceptions import ClientError, BotoCoreError
+from fastapi.responses import Response
+from fastapi import UploadFile, File
 from fastapi import HTTPException
 from fastapi import FastAPI  #for bringing fastapi class in my python program
 from pydantic import BaseModel, Field, field_validator
 from fastapi.responses import JSONResponse
 app = FastAPI()
+
+Instrumentator().instrument(app).expose(app)  #for prometheus metrics
+
+#s3 client configuration
+s3_client = boto3.client(
+    "s3",
+    endpoint_url=os.getenv("S3_ENDPOINT_URL", "http://localhost:4566"),
+    region_name="us-east-1",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+)
+#connection testing
+try:
+    s3_client.head_bucket(Bucket="cloudops-project-assets")
+    print("S3 connection successful!")
+except Exception as e:
+    print(f"S3 connection failed: {e}")
+
+
 
 #Logging Config
 logging.basicConfig(
@@ -201,3 +225,121 @@ def delete_user(user_id: int):
                 "user": {"id": deleted_user[0], "name": deleted_user[1]}
 
     }
+
+#s3 endpoints
+
+@app.post("/upload")
+def upload_file(file: UploadFile = File(...)):
+    try:
+        # Upload the file to S3
+        s3_client.upload_fileobj(file.file, "cloudops-project-assets", file.filename)
+        logger.info("File uploaded successfully: %s", file.filename)
+        return {"message": f"File '{file.filename}' uploaded successfully."}
+    except Exception as e:
+        logger.error("File upload failed: %s", str(e))
+        raise HTTPException(status_code=500, detail="File upload failed.")
+
+@app.post("/upload")
+def upload_file(file: UploadFile = File(...)):
+    try:
+        if not file.filename or not file.filename.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Filename cannot be empty."
+            )
+
+        s3_client.upload_fileobj(
+            file.file,
+            "cloudops-project-assets",
+            file.filename
+        )
+
+        logger.info("File uploaded successfully: %s", file.filename)
+
+        return {
+            "message": f"File '{file.filename}' uploaded successfully."
+        }
+
+    except HTTPException:
+        raise
+
+    except (ClientError, BotoCoreError) as e:
+        logger.error("S3 upload failed: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="S3 upload failed."
+        )
+
+    finally:
+        file.file.close()
+
+@app.get("/files/{filename}")
+def download_file(filename: str):
+    try:
+        response = s3_client.get_object(
+            Bucket="cloudops-project-assets",
+            Key=filename
+        )
+
+        file_content = response["Body"].read()
+
+        logger.info("File downloaded successfully: %s", filename)
+
+        return Response(
+            content=file_content,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+
+        if error_code in ("NoSuchKey", "404", "NotFound"):
+            raise HTTPException(
+                status_code=404,
+                detail="File not found."
+            )
+
+        logger.error("S3 download error: %s", e)
+        raise HTTPException(status_code=503, detail="S3 service error.")
+
+    except BotoCoreError as e:
+        logger.error("S3 connection error: %s", e)
+        raise HTTPException(status_code=503, detail="S3 service unavailable.")
+
+@app.delete("/files/{filename}")
+def delete_file(filename: str):
+    try:
+        s3_client.head_object(
+            Bucket="cloudops-project-assets",
+            Key=filename
+        )
+
+        s3_client.delete_object(
+            Bucket="cloudops-project-assets",
+            Key=filename
+        )
+
+        logger.info("File deleted successfully: %s", filename)
+
+        return {
+            "message": f"File '{filename}' deleted successfully."
+        }
+
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            raise HTTPException(
+                status_code=404,
+                detail="File not found."
+            )
+
+        logger.error("S3 deletion error: %s", e)
+        raise HTTPException(status_code=503, detail="S3 service error.")
+
+    except BotoCoreError as e:
+        logger.error("S3 connection error: %s", e)
+        raise HTTPException(status_code=503, detail="S3 service unavailable.")
